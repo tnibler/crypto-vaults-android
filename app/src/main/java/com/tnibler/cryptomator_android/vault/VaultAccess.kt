@@ -28,11 +28,14 @@ import java.util.*
 
 class VaultAccess(private val rootDocumentFile: DocumentFile,
                   private val masterKeyFilename: String,
-                  passphrase: String,
+                  passphrase: ByteArray,
                   private val pepper: ByteArray,
                   private val contentResolver: ContentResolver,
                   val flags: VaultFlags) {
-    val cryptor = getCryptor(contentResolver, rootDocumentFile, passphrase, pepper, masterKeyFilename)
+    val cryptor = getCryptor(contentResolver, rootDocumentFile, ByteArrayCharSequence(passphrase), pepper, masterKeyFilename)
+    init {
+        Arrays.fill(passphrase, 0)
+    }
     private val cachedCryptor =
         CachedCryptor(
             cryptor,
@@ -43,7 +46,7 @@ class VaultAccess(private val rootDocumentFile: DocumentFile,
     private fun getCryptor(
         contentResolver: ContentResolver,
         documentTree: DocumentFile,
-        passphrase: String,
+        passphrase: CharSequence,
         pepper: ByteArray,
         masterKeyFilename: String
     ): Cryptor {
