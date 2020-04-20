@@ -16,7 +16,8 @@ class WriteHelper(private val nextOriginalChunk: (Long) -> ByteBuffer,
                   private val offset: Long,
                   private val data: ByteArray,
                   private val size: Int,
-                  private val chunkSize: Int) {
+                  private val chunkSize: Int,
+                  private val truncate: Boolean) {
 
     private val TAG = javaClass.simpleName
     private val firstChunkWithData: Int = (offset / chunkSize).toInt()
@@ -32,12 +33,14 @@ class WriteHelper(private val nextOriginalChunk: (Long) -> ByteBuffer,
 
     fun nextChunk(): Chunk {
         Log.d(TAG, "nextChunk: currentChunk=$currentChunk, readFromData=$readFromData")
-        if (currentChunk in (firstChunkWithData + 1) until lastChunkWithData) {
+        if (currentChunk in (firstChunkWithData + 1) until lastChunkWithData || truncate) {
             //whole chunk comes from data
             val toReadFromData = min(dataBuffer.remaining(), chunkSize)
             Log.d(TAG, "whole chunk from data, reading $toReadFromData bytes from data")
             dataBuffer.get(buffer.array(), 0, toReadFromData)
             readFromData += toReadFromData
+            Log.d(TAG, "buffer limit ${buffer.limit()}")
+            buffer.limit(toReadFromData)
             return Chunk(buffer, currentChunk).also {
                 currentChunk++
             }
@@ -81,7 +84,8 @@ class WriteHelper(private val nextOriginalChunk: (Long) -> ByteBuffer,
         skipChunks(firstChunkWithData)
     }
 
-    fun available(): Boolean = currentChunk <= lastChunk
+    fun available(): Boolean =
+        if (truncate) dataBuffer.hasRemaining() else currentChunk <= lastChunk
 
     data class Chunk(val data: ByteBuffer, val number: Int)
 }

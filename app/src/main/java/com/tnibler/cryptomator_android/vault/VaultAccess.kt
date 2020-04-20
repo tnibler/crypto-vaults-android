@@ -1,12 +1,14 @@
 package com.tnibler.cryptomator_android.vault
 
 import android.content.ContentResolver
+import android.provider.DocumentsContract
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import com.google.common.io.BaseEncoding
 import com.tnibler.cryptomator_android.cryptomator.Constants
 import com.tnibler.cryptomator_android.data.VaultFlags
 import com.tnibler.cryptomator_android.util.*
+import com.tnibler.cryptomator_android.vault.exception.ErrorCreatingDirectory
 import com.tnibler.cryptomator_android.vault.exception.ErrorCreatingFile
 import com.tnibler.cryptomator_android.vault.exception.ErrorWritingToFile
 import com.tnibler.cryptomator_android.vault.exception.KeyFileNotFoundException
@@ -22,6 +24,7 @@ import java.nio.charset.Charset
 import java.security.NoSuchAlgorithmException
 import java.security.SecureRandom
 import java.text.Normalizer
+import java.util.*
 
 class VaultAccess(private val rootDocumentFile: DocumentFile,
                   private val masterKeyFilename: String,
@@ -119,21 +122,17 @@ class VaultAccess(private val rootDocumentFile: DocumentFile,
         )
     }
 
+    private val rootHash = cachedCryptor.hashDirectoryId("")
+    private val dataDir = rootDocumentFile.findDirectory(Constants.DATA_DIR_NAME)
+    private val rootDir = dataDir.findDirectory(rootHash.substring(0..1))
+        .findDirectory(rootHash.substring(2))
+
     private fun getCipherDirectory(
         path: List<String>,
         parentDir: DocumentFile? = null,
         parentId: ByteArray = Constants.ROOT_DIR_ID.toByteArray()
     ): CipherDirectory {
         Log.d(TAG, "getCipherDirectory: path=$path")
-        val rootHash = cachedCryptor.hashDirectoryId("")
-//        val rootDir = cachedCryptor.childDocument(rootDocumentFile, Constants.DATA_DIR_NAME).run {
-//            cachedCryptor.childDocument(this, rootHash.substring(0, 2)).run {
-//                cachedCryptor.childDocument(this, rootHash.substring(2))
-//            }
-//        }
-        val rootDir = rootDocumentFile.findDirectory(Constants.DATA_DIR_NAME) //where the files in the vault root are actually stored
-            .findDirectory(rootHash.substring(0..1))
-            .findDirectory(rootHash.substring(2))
         val path = path.dropWhile { it == "" }
         if (path.isEmpty()) {
             return CipherDirectory(
@@ -183,6 +182,67 @@ class VaultAccess(private val rootDocumentFile: DocumentFile,
         val file = getCipherFile(path)
         val contents = contentResolver.openInputStream(file.cipherFile.uri) ?: throw RuntimeException("Could not open File")
         return DecryptingReadableByteChannel(Channels.newChannel(contents), cryptor, true)
+    }
+
+    fun createFileOrDirectory(path: List<String>, displayName: String, mimeType: String) {
+//        if (flags.isReadOnly) {
+//            throw UnsupportedOperationException("Vault is readonly!")
+//        }
+        val parent = getCipherDirectory(path)
+        val cipherName = cachedCryptor.encryptFilename(displayName, parent.id) + Constants.CRYPTOMATOR_FILE_SUFFIX
+        if (parent.directory.findFile(cipherName) != null) {
+            throw RuntimeException("File or directory already exists!")
+        }
+        when (mimeType) {
+            DocumentsContract.Document.MIME_TYPE_DIR -> {
+                val dir = parent.directory.createDirectory(cipherName)  ?: throw ErrorCreatingDirectory("Failed to create directory $cipherName in ${parent.directory.uri}")
+
+                val dirFile = dir.createFile("application/text", Constants.DIR_FILE_NAME) ?: throw ErrorCreatingFile("Failed to create dir file in ${dir.uri}")
+                val newDirectoryId = UUID.randomUUID().toString()
+                val fileOut = contentResolver.openOutputStream(dirFile.uri) ?: throw ErrorWritingToFile("Failed writing to dir file ${dirFile.uri}")
+                fileOut.write(newDirectoryId.toByteArray(Charset.forName("UTF-8")))
+                val dirIdHash = cachedCryptor.hashDirectoryId(newDirectoryId)
+                val d1 = dataDir.findOrCreateDirectory(dirIdHash.substring(0..1)) ?: throw ErrorCreatingDirectory("Failed to create directory ${dirIdHash.substring(0..1)}")
+                val d2 = d1.findOrCreateDirectory(dirIdHash.substring(2)) ?: throw ErrorCreatingDirectory("Failed to create directory ${dirIdHash.substring(2)}")
+            }
+            else -> {
+                parent.directory.createFile(mimeType, cipherName) ?: throw ErrorCreatingFile("Failed to create file $cipherName in ${parent.directory.uri}")
+            }
+        }
+    }
+
+    fun renameDocument(path: List<String>, newName: String) {
+        val cipherDoc = getFileOrDirectory(path)
+        val newCipherName = cachedCryptor.encryptFilename(newName)
+        cipherDoc.cipherFile.renameTo(newCipherName + Constants.CRYPTOMATOR_FILE_SUFFIX)
+    }
+
+    fun deleteDocument(path: List<String>) {
+        val cipherDoc = getFileOrDirectory(path)
+        deleteDocument(cipherDoc.cipherFile)
+    }
+
+    private fun deleteDocument(document: DocumentFile) {
+        when {
+            document.isDirectory -> {
+                val dirFile = document.getFile(Constants.DIR_FILE_NAME)
+                val dirId = contentResolver.openInputStream(dirFile.uri)?.readBytes() ?: throw RuntimeException()
+                val hash = cachedCryptor.hashDirectoryId(dirId.toString())
+                val d1 = dataDir.findDirectory(hash.substring(0..1))
+                val d2 = d1.findDirectory(hash.substring(2))
+                d2.listFiles().forEach { _deleteDocument(it) }
+                d2.delete()
+                if (d1.listFiles().isEmpty()) {
+                    d1.delete()
+                }
+            }
+            document.isFile -> {
+                document.delete()
+            }
+            else -> {
+                throw UnsupportedOperationException()
+            }
+        }
     }
 
     companion object {

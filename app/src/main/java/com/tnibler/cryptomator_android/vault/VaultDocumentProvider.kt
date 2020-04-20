@@ -22,6 +22,7 @@ import com.tnibler.cryptomator_android.App
 import com.tnibler.cryptomator_android.BuildConfig
 import com.tnibler.cryptomator_android.data.Vault
 import com.tnibler.cryptomator_android.unlockVault.UnlockedVaultsService
+import com.tnibler.cryptomator_android.vault.exception.FileNotFoundException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
@@ -64,7 +65,7 @@ class VaultDocumentProvider : DocumentsProvider() {
         mode ?: run { throw IllegalArgumentException("mode is null!") }
         Log.d(TAG, "openDocument: documentId=$documentId, mode=$mode")
         val uri = Uri.parse(documentId)
-        val vaultId = uri.authority?.toLong() ?: throw RuntimeException("Invalid vault id: ${uri.authority} from URI $uri")
+        val vaultId = uri.authority?.toLongOrNull() ?: throw RuntimeException("Invalid vault id: ${uri.authority} from URI $uri")
         val vaultAccess = service!!.getVault(vaultId)
         val context = requireNotNull(context)
         if (vaultAccess == null) {
@@ -110,7 +111,7 @@ class VaultDocumentProvider : DocumentsProvider() {
     ): Cursor {
         Log.d(TAG, "queryChildDocuments: $parentDocumentId")
         val parentIdUri = Uri.parse(parentDocumentId)
-        val vaultId = parentIdUri.authority?.toLong() ?: throw RuntimeException("authority is null!")
+        val vaultId = parentIdUri.authority?.toLongOrNull() ?: throw RuntimeException("authority is null!")
 
         val result = MatrixCursor(projection ?: DEFAULT_DOCUMENT_PROJECTION)
         val vaultAccess = service?.getVault(vaultId) ?: run {
@@ -152,12 +153,6 @@ class VaultDocumentProvider : DocumentsProvider() {
         return result
     }
 
-    private fun getVaultForDocument(documentId: String, context: Context): Vault {
-        val uri = Uri.parse(documentId)
-        val vaultId = uri.authority?.toLong() ?: throw RuntimeException("Invalid Vault id!")
-        return (context.applicationContext as App).db.getVault(vaultId)
-    }
-
     private fun getMimeType(file: VaultAccess.Companion.File): String? {
         val ext = file.name.split(".").lastOrNull()
         return if (file.name.contains(".") && ext != null) {
@@ -184,17 +179,22 @@ class VaultDocumentProvider : DocumentsProvider() {
             }
         }
         else {
-            val vaultId = uri.authority?.toLong() ?: throw RuntimeException("Invalid Vault id!")
-            val vault = getVaultForDocument(documentId, requireNotNull(context))
-            val root = DocumentFile.fromTreeUri(requireNotNull(context), vault.rootUri) ?: throw RuntimeException("No root document!")
-            val vaultAccess = service!!.getVault(vaultId) ?: return result
-            Log.d(TAG, "uri pathsegments: ${uri.pathSegments}, ${uri.path}")
-            val file = vaultAccess.getFileOrDirectory(uri.pathSegments)
-            result.newRow().apply {
-                add(Document.COLUMN_DISPLAY_NAME, file.name)
-                add(Document.COLUMN_MIME_TYPE, getMimeType(file))
-                add(Document.COLUMN_FLAGS, if (file.type == VaultAccess.Companion.FileType.DIRECTORY) Document.FLAG_DIR_SUPPORTS_CREATE else Document.FLAG_SUPPORTS_WRITE)
-                add(Document.COLUMN_DOCUMENT_ID, documentId)
+            val vaultId = uri.authority?.toLongOrNull() ?: throw RuntimeException("Invalid Vault id!")
+            val vaultAccess = service!!.getVault(vaultId) ?: return result //TODO throw exception or return empty result?
+            try {
+                val file = vaultAccess.getFileOrDirectory(uri.pathSegments)
+                result.newRow().apply {
+                    add(Document.COLUMN_DISPLAY_NAME, file.name)
+                    add(Document.COLUMN_MIME_TYPE, getMimeType(file))
+                    add(
+                        Document.COLUMN_FLAGS,
+                        if (file.type == VaultAccess.Companion.FileType.DIRECTORY) Document.FLAG_DIR_SUPPORTS_CREATE else Document.FLAG_SUPPORTS_WRITE
+                    )
+                    add(Document.COLUMN_DOCUMENT_ID, documentId)
+                }
+            }
+            catch (e: FileNotFoundException) {
+                return result
             }
         }
         return result
@@ -226,6 +226,79 @@ class VaultDocumentProvider : DocumentsProvider() {
             Log.d(TAG, "rootId: $id")
         } }
         return result
+    }
+
+    override fun createDocument(
+        parentDocumentId: String?,
+        mimeType: String?,
+        displayName: String?
+    ): String {
+        displayName ?: throw IllegalArgumentException("Display name can't be null!")
+        Log.d(TAG, "createDocument: parentDocumentId=$parentDocumentId, mimeType=$mimeType, displayName=$displayName")
+        val uri = Uri.parse(parentDocumentId)
+        val vaultAccess = getVaultAccess(uri.authority?.toLongOrNull() ?: throw RuntimeException("Failed to parse vault id from document id '$parentDocumentId'"))
+
+        vaultAccess.createFileOrDirectory(uri.pathSegments, displayName, mimeType ?: "*/*")
+        val id = Uri.Builder()
+            .scheme(BuildConfig.SCHEME)
+            .authority(uri.authority)
+            .path(uri.path + "/" + displayName)
+            .build()
+        Log.d(TAG, "created directory with id $id")
+        return id.toString()
+    }
+
+    override fun copyDocument(sourceDocumentId: String?, targetParentDocumentId: String?): String {
+        val uri = Uri.parse(targetParentDocumentId)
+        val vaultAccess = getVaultAccess(uri.authority?.toLongOrNull() ?: throw RuntimeException("Failed to parse vault id from document id '$parentDocumentId'"))
+        val targetPath = Uri.parse(targetParentDocumentId).pathSegments
+        val sourcePath = Uri.parse(sourceDocumentId).pathSegments
+        TODO()
+    }
+
+    override fun moveDocument(
+        sourceDocumentId: String?,
+        sourceParentDocumentId: String?,
+        targetParentDocumentId: String?
+    ): String {
+        return super.moveDocument(sourceDocumentId, sourceParentDocumentId, targetParentDocumentId)
+    }
+
+    override fun deleteDocument(documentId: String?) {
+        val uri = Uri.parse(documentId)
+        val vaultAccess = getVaultAccess(uri.authority.toLongOrNull() ?: throw IllegalArgumentException())
+        vaultAccess.deleteDocument(uri.pathSegments)
+    }
+
+    override fun removeDocument(documentId: String?, parentDocumentId: String?) {
+        super.removeDocument(documentId, parentDocumentId)
+        deleteDocument(documentId)
+    }
+
+    override fun isChildDocument(parentDocumentId: String?, documentId: String?): Boolean {
+        val path = Uri.parse(documentId).pathSegments
+        val parentPath = Uri.parse(parentDocumentId).pathSegments
+        return parentPath.size <= path.size && parentPath.zip(path) { a, b -> a == b}.fold(true) { a, b -> a && b }
+    }
+
+    override fun renameDocument(documentId: String?, displayName: String?): String {
+        displayName ?: throw IllegalArgumentException("New name can't be null")
+        val uri = Uri.parse(documentId)
+        val vaultAccess = getVaultAccess(uri.authority?.toLong() ?: throw IllegalArgumentException())
+        vaultAccess.renameDocument(uri.pathSegments, displayName)
+        val id = Uri.Builder()
+            .scheme(BuildConfig.SCHEME)
+            .authority(uri.authority)
+            .apply {
+                uri.pathSegments.dropLast(1).forEach { appendPath(it) }
+            }
+            .appendPath(displayName)
+            .build()
+        return id.toString()
+    }
+
+    private fun getVaultAccess(vaultId: Long): VaultAccess {
+        return service!!.getVault(vaultId) ?: throw SecurityException("Unlock vault to proceed")
     }
 
     private fun buildRootId(vault: Vault): String {

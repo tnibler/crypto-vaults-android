@@ -1,4 +1,4 @@
 package com.tnibler.cryptomator_android.vault.exception
 
 
-class ErrorWritingToFile : RuntimeException()
+class ErrorWritingToFile(what: String? = null) : RuntimeException(what)
