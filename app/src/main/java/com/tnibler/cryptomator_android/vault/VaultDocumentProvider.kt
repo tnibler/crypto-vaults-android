@@ -135,11 +135,12 @@ class VaultDocumentProvider : DocumentsProvider() {
                 }
                 add(Document.COLUMN_MIME_TYPE, mime)
                 //TODO only if not readonly
+                val flags =  Document.FLAG_SUPPORTS_REMOVE or Document.FLAG_SUPPORTS_COPY or Document.FLAG_SUPPORTS_MOVE
                 if (mime == Document.MIME_TYPE_DIR) {
-                    add(Document.COLUMN_FLAGS, Document.FLAG_DIR_SUPPORTS_CREATE)
+                    add(Document.COLUMN_FLAGS, Document.FLAG_DIR_SUPPORTS_CREATE or flags)
                 }
                 else {
-                    add(Document.COLUMN_FLAGS, Document.FLAG_SUPPORTS_WRITE)
+                    add(Document.COLUMN_FLAGS, Document.FLAG_SUPPORTS_WRITE or flags)
                 }
                 val documentId = Uri.Builder()
                     .scheme(BuildConfig.SCHEME)
@@ -183,12 +184,13 @@ class VaultDocumentProvider : DocumentsProvider() {
             val vaultAccess = service!!.getVault(vaultId) ?: return result //TODO throw exception or return empty result?
             try {
                 val file = vaultAccess.getFileOrDirectory(uri.pathSegments)
+                val flags =  Document.FLAG_SUPPORTS_REMOVE or Document.FLAG_SUPPORTS_COPY or Document.FLAG_SUPPORTS_MOVE
                 result.newRow().apply {
                     add(Document.COLUMN_DISPLAY_NAME, file.name)
                     add(Document.COLUMN_MIME_TYPE, getMimeType(file))
                     add(
                         Document.COLUMN_FLAGS,
-                        if (file.type == VaultAccess.Companion.FileType.DIRECTORY) Document.FLAG_DIR_SUPPORTS_CREATE else Document.FLAG_SUPPORTS_WRITE
+                        if (file.type == VaultAccess.Companion.FileType.DIRECTORY) Document.FLAG_DIR_SUPPORTS_CREATE or flags else Document.FLAG_SUPPORTS_WRITE or flags
                     )
                     add(Document.COLUMN_DOCUMENT_ID, documentId)
                 }
@@ -250,7 +252,7 @@ class VaultDocumentProvider : DocumentsProvider() {
 
     override fun copyDocument(sourceDocumentId: String?, targetParentDocumentId: String?): String {
         val uri = Uri.parse(targetParentDocumentId)
-        val vaultAccess = getVaultAccess(uri.authority?.toLongOrNull() ?: throw RuntimeException("Failed to parse vault id from document id '$parentDocumentId'"))
+        val vaultAccess = getVaultAccess(uri.authority?.toLongOrNull() ?: throw RuntimeException("Failed to parse vault id from document id '$targetParentDocumentId'"))
         val targetPath = Uri.parse(targetParentDocumentId).pathSegments
         val sourcePath = Uri.parse(sourceDocumentId).pathSegments
         TODO()
@@ -266,12 +268,11 @@ class VaultDocumentProvider : DocumentsProvider() {
 
     override fun deleteDocument(documentId: String?) {
         val uri = Uri.parse(documentId)
-        val vaultAccess = getVaultAccess(uri.authority.toLongOrNull() ?: throw IllegalArgumentException())
+        val vaultAccess = getVaultAccess(uri.authority?.toLongOrNull() ?: throw IllegalArgumentException())
         vaultAccess.deleteDocument(uri.pathSegments)
     }
 
     override fun removeDocument(documentId: String?, parentDocumentId: String?) {
-        super.removeDocument(documentId, parentDocumentId)
         deleteDocument(documentId)
     }
 

@@ -149,9 +149,7 @@ class VaultAccess(private val rootDocumentFile: DocumentFile,
         val dirFile = (parentDir ?: rootDir).findDirectory(cipherPathFirst + Constants.CRYPTOMATOR_FILE_SUFFIX)
             .findFile(Constants.DIR_FILE_NAME) ?: throw RuntimeException("Missing dir file!")
         val dirId = contentResolver.openInputStream(dirFile.uri)?.readBytes() ?: throw RuntimeException("Could not read dir file")
-        Log.d(TAG, "read dir ID $dirId")
         val h = cachedCryptor.hashDirectoryId(dirId.toString(Charset.forName("UTF-8")))
-        Log.d(TAG, "hashed dir ID $h")
         val d = rootDocumentFile.findDirectory(Constants.DATA_DIR_NAME)
             .findDirectory(h.substring(0..1))
             .findDirectory(h.substring(2))
@@ -215,29 +213,38 @@ class VaultAccess(private val rootDocumentFile: DocumentFile,
     }
 
     fun renameDocument(path: List<String>, newName: String) {
-        val cipherDoc = getFileOrDirectory(path)
-        val newCipherName = cachedCryptor.encryptFilename(newName)
-        cipherDoc.cipherFile.renameTo(newCipherName + Constants.CRYPTOMATOR_FILE_SUFFIX)
+        val cipherParent = getCipherDirectory(path.dropLast(1))
+        val newCipherName = cachedCryptor.encryptFilename(newName, cipherParent.id)
+        getFileOrDirectory(path).cipherFile.renameTo(newCipherName + Constants.CRYPTOMATOR_FILE_SUFFIX)
     }
 
     fun deleteDocument(path: List<String>) {
-        val cipherDoc = getFileOrDirectory(path)
-        deleteDocument(cipherDoc.cipherFile)
+        Log.d(TAG, "deleteDocument: ${path}")
+        val cipherParentDoc = getCipherDirectory(path.dropLast(1))
+        val hashName = cachedCryptor.encryptFilename(path.last(), cipherParentDoc.id)
+        deleteDocument(cipherParentDoc.directory.getFile(hashName + Constants.CRYPTOMATOR_FILE_SUFFIX))
     }
 
     private fun deleteDocument(document: DocumentFile) {
+        Log.d(TAG, "deleteDocument: ${document.uri}, ${document.name}")
         when {
             document.isDirectory -> {
+                Log.d(TAG, "child cipher docs: ${document.listFiles().map { it.name }}")
                 val dirFile = document.getFile(Constants.DIR_FILE_NAME)
                 val dirId = contentResolver.openInputStream(dirFile.uri)?.readBytes() ?: throw RuntimeException()
-                val hash = cachedCryptor.hashDirectoryId(dirId.toString())
+                val hash = cachedCryptor.hashDirectoryId(dirId.toString(Charset.forName("UTF-8")))
                 val d1 = dataDir.findDirectory(hash.substring(0..1))
                 val d2 = d1.findDirectory(hash.substring(2))
-                d2.listFiles().forEach { _deleteDocument(it) }
+                d2.listFiles().forEach {
+                    Log.d(TAG, "deleting child document ${it.uri}, ${it.name}")
+                    deleteDocument(it)
+                }
                 d2.delete()
                 if (d1.listFiles().isEmpty()) {
                     d1.delete()
                 }
+                dirFile.delete()
+                document.delete()
             }
             document.isFile -> {
                 document.delete()
@@ -275,7 +282,7 @@ class VaultAccess(private val rootDocumentFile: DocumentFile,
             documentTree: DocumentFile,
             masterKeyFilename: String,
             pepper: ByteArray = byteArrayOf(),
-            passphrase: CharSequence,
+            passphrase: ByteArrayCharSequence,
             flags: VaultFlags
         ): VaultAccess {
             documentTree.listFiles().forEach { it.delete() }
@@ -309,7 +316,7 @@ class VaultAccess(private val rootDocumentFile: DocumentFile,
             return VaultAccess(
                 rootDocumentFile = documentTree,
                 masterKeyFilename = masterKeyFilename,
-                passphrase = passphrase.toString(),
+                passphrase = passphrase.byteArray,
                 pepper = pepper,
                 contentResolver = contentResolver,
                 flags = flags
