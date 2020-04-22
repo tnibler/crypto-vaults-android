@@ -28,7 +28,7 @@ class OpenVaultModel(val vaultRootUri: String, val context: Context, val db: Db)
         }
     }
 
-    fun open(password: String, contentResolver: ContentResolver): Boolean {
+    fun open(password: ByteArray, contentResolver: ContentResolver): Boolean {
         try {
             val masterKeyFileName = keyFile.name ?: throw RuntimeException()
             val vault = VaultAccess(

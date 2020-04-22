@@ -15,11 +15,13 @@ import com.tnibler.cryptomator_android.App
 import com.tnibler.cryptomator_android.data.Vault
 import com.tnibler.cryptomator_android.data.VaultFlags
 import com.tnibler.cryptomator_android.databinding.CreateVaultBinding
+import com.tnibler.cryptomator_android.vault.ByteArrayCharSequence
 import com.tnibler.cryptomator_android.vault.VaultAccess
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.*
 
 class CreateVaultController(bundle: Bundle) : Controller(bundle) {
     private val TAG = javaClass.simpleName
@@ -31,8 +33,12 @@ class CreateVaultController(bundle: Bundle) : Controller(bundle) {
             binding.createVaultKeyfileNameEdit.setText("masterkey.cryptomator", TextView.BufferType.EDITABLE)
             createVaultConfirmButton.setOnClickListener {
                 val root = binding.root
-                val password = createVaultPasswordEdit.text.toString()
-                if (password != createVaultPasswordConfirmEdit.text.toString()) {
+                val passwordChars = CharArray(createVaultPasswordEdit.length())
+                createVaultPasswordEdit.text.getChars(0, passwordChars.size, passwordChars, 0)
+
+                val passwordConfirm = CharArray(createVaultPasswordConfirmEdit.length())
+                createVaultPasswordEdit.text.getChars(0, passwordConfirm.size, passwordChars, 0)
+                if (passwordChars.contentEquals(passwordConfirm)) {
                     Toast.makeText(root.context, "Passwords don't match", Toast.LENGTH_LONG).show()
                     return@setOnClickListener
                 }
@@ -53,7 +59,12 @@ class CreateVaultController(bundle: Bundle) : Controller(bundle) {
                     Log.d(TAG, "Creating vault")
                     root.context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                     val flags = VaultFlags()
-                    VaultAccess.createVault(root.context.contentResolver, dir, keyFileName, byteArrayOf(), password, flags)
+                    val passwordBytes = ByteArray(passwordChars.size)
+                    passwordChars.forEachIndexed { index, c -> passwordBytes[index] = c.toByte() }
+                    Arrays.fill(passwordChars, 'A')
+                    Arrays.fill(passwordConfirm, 'A')
+                    VaultAccess.createVault(root.context.contentResolver, dir, keyFileName, byteArrayOf(), ByteArrayCharSequence(passwordBytes), flags)
+                    Arrays.fill(passwordBytes, 0)
                     db.putVault(
                         Vault(
                             0,

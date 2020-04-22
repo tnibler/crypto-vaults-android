@@ -13,6 +13,7 @@ import androidx.documentfile.provider.DocumentFile
 import com.tnibler.cryptomator_android.App
 import com.tnibler.cryptomator_android.databinding.UnlockVaultBinding
 import com.tnibler.cryptomator_android.vault.VaultAccess
+import kotlinx.android.synthetic.main.create_vault.*
 import org.cryptomator.cryptolib.api.InvalidPassphraseException
 import org.cryptomator.cryptolib.api.UnsupportedVaultFormatException
 
@@ -31,7 +32,11 @@ class UnlockVaultActivity : Activity() {
                     Log.d(TAG, "Service is null")
                     return@setOnClickListener
                 }
-                val pwd = unlockVaultPwdEdit.text.toString()
+                val passwordChars = CharArray(unlockVaultPwdEdit.length())
+                unlockVaultPwdEdit.text.getChars(0, passwordChars.size, passwordChars, 0)
+                val passwordBytes = ByteArray(passwordChars.size)
+                passwordChars.forEachIndexed { index, c -> passwordBytes[index] = c.toByte() }
+                passwordChars.fill('A' )
                 val vaultId = intent.extras?.getLong(KEY_VAULT_ID) ?: throw IllegalArgumentException("no vault id passed")
                 val vault = (applicationContext as App).db.getVault(vaultId)
                 val rootDocument = DocumentFile.fromTreeUri(this@UnlockVaultActivity, vault.rootUri) ?: throw RuntimeException("could not open root directory")
@@ -40,11 +45,12 @@ class UnlockVaultActivity : Activity() {
                         VaultAccess(
                             rootDocument,
                             vault.masterKeyFileName,
-                            pwd,
+                            passwordBytes,
                             byteArrayOf(),
                             contentResolver,
                             vault.flags
                         )
+                    passwordBytes.fill(0)
                     service!!.setVaultAccess(vaultId, vaultAccess)
                     finish()
                 }

@@ -19,13 +19,18 @@ class OpenVaultController(args: Bundle) : Controller(args) {
             model = OpenVaultModel(args.getString(CreateVaultController.KEY_VAULT_URI) ?: throw IllegalArgumentException("Missing vault uri argument!"), root.context,
                 (root.context.applicationContext as App).db)
             openVaultOpenButton.setOnClickListener {
-                val pwd = openVaultPasswordEdit.text.toString()
-                if (model.open(pwd, root.context.contentResolver)) {
+                val passwordChars = CharArray(openVaultPasswordEdit.length())
+                openVaultPasswordEdit.text.getChars(0, passwordChars.size, passwordChars, 0)
+                val passwordBytes = ByteArray(passwordChars.size)
+                passwordChars.forEachIndexed { index, c -> passwordBytes[index] = c.toByte() }
+                passwordChars.fill('A' )
+                if (model.open(passwordBytes, root.context.contentResolver)) {
                     router.popCurrentController()
                 }
                 else {
                     Toast.makeText(root.context, "Failed to open vault", Toast.LENGTH_LONG).show()
                 }
+                passwordBytes.fill(0)
             }
         }
         return binding.root
