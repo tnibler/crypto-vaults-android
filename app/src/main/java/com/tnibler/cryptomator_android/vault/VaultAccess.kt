@@ -8,10 +8,7 @@ import com.google.common.io.BaseEncoding
 import com.tnibler.cryptomator_android.cryptomator.Constants
 import com.tnibler.cryptomator_android.data.VaultFlags
 import com.tnibler.cryptomator_android.util.*
-import com.tnibler.cryptomator_android.vault.exception.ErrorCreatingDirectory
-import com.tnibler.cryptomator_android.vault.exception.ErrorCreatingFile
-import com.tnibler.cryptomator_android.vault.exception.ErrorWritingToFile
-import com.tnibler.cryptomator_android.vault.exception.KeyFileNotFoundException
+import com.tnibler.cryptomator_android.vault.exception.*
 import org.cryptomator.cryptolib.Cryptors
 import org.cryptomator.cryptolib.DecryptingReadableByteChannel
 import org.cryptomator.cryptolib.api.Cryptor
@@ -83,9 +80,9 @@ class VaultAccess(private val rootDocumentFile: DocumentFile,
      * @return the file or directory specified by the given path
      */
     fun getFileOrDirectory(path: List<String>): File {
-        Log.d(TAG, "getFileOrDirectory: path=$path")
+//        Log.d(TAG, "getFileOrDirectory: path=$path")
         val cipherParentDirectory = getCipherDirectory(path.dropLast(1), null)
-        Log.d(TAG, "Parent dir cipher name ${cipherParentDirectory.directory.name}")
+//        Log.d(TAG, "Parent dir cipher name ${cipherParentDirectory.directory.name}")
         val cipherName = cachedCryptor.encryptFilename(path.last(), cipherParentDirectory.id)
         val cipherFile = cipherParentDirectory.directory.getFile(cipherName + Constants.CRYPTOMATOR_FILE_SUFFIX)
         return when {
@@ -111,11 +108,11 @@ class VaultAccess(private val rootDocumentFile: DocumentFile,
     }
 
     private fun getCipherFile(path: List<String>): File {
-        Log.d(TAG, "getCipherFile: $path")
+//        Log.d(TAG, "getCipherFile: $path")
         val cipherParentDirectory = getCipherDirectory(path.dropLast(1))
         val dir = cipherParentDirectory.directory
         val dirId = cipherParentDirectory.id
-        Log.d(TAG, "getCipherFile: parentDir ${dir.uri}, parentId ${dirId.toString(Charset.forName("UTF-8"))}")
+//        Log.d(TAG, "getCipherFile: parentDir ${dir.uri}, parentId ${dirId.toString(Charset.forName("UTF-8"))}")
         val cipherName = cachedCryptor.encryptFilename(path.last(), dirId)
         val cipherFile = dir.getFile(cipherName + Constants.CRYPTOMATOR_FILE_SUFFIX)
         return File(
@@ -135,7 +132,7 @@ class VaultAccess(private val rootDocumentFile: DocumentFile,
         parentDir: DocumentFile? = null,
         parentId: ByteArray = Constants.ROOT_DIR_ID.toByteArray()
     ): CipherDirectory {
-        Log.d(TAG, "getCipherDirectory: path=$path")
+//        Log.d(TAG, "getCipherDirectory: path=$path")
         val path = path.dropWhile { it == "" }
         if (path.isEmpty()) {
             return CipherDirectory(
@@ -145,7 +142,7 @@ class VaultAccess(private val rootDocumentFile: DocumentFile,
         }
         //TODO long filenames
         val cipherPathFirst = cachedCryptor.encryptFilename(path.first(), parentId)
-        Log.d(TAG, "ciphered path.first: $cipherPathFirst")
+//        Log.d(TAG, "ciphered path.first: $cipherPathFirst")
         val dirFile = (parentDir ?: rootDir).findDirectory(cipherPathFirst + Constants.CRYPTOMATOR_FILE_SUFFIX)
             .findFile(Constants.DIR_FILE_NAME) ?: throw RuntimeException("Missing dir file!")
         val dirId = contentResolver.openInputStream(dirFile.uri)?.readBytes() ?: throw RuntimeException("Could not read dir file")
@@ -162,11 +159,11 @@ class VaultAccess(private val rootDocumentFile: DocumentFile,
 
     private fun decryptFilesInDir(dir: DocumentFile, dirId: ByteArray): List<File> {
         return dir.listFiles().map { child ->
-            Log.d(
-                TAG, "decrypting cipher filename: ${child.name?.removeSuffix(
-                    Constants.CRYPTOMATOR_FILE_SUFFIX
-                )}, dirId ${dirId.toString(
-                Charset.forName("UTF-8"))}")
+//            Log.d(
+//                TAG, "decrypting cipher filename: ${child.name?.removeSuffix(
+//                    Constants.CRYPTOMATOR_FILE_SUFFIX
+//                )}, dirId ${dirId.toString(
+//                Charset.forName("UTF-8"))}")
             //FIXME what to do if name is null here
             val name = cachedCryptor.decryptFilename(child.name?.removeSuffix(Constants.CRYPTOMATOR_FILE_SUFFIX) ?: throw RuntimeException("Filename is null!"), dirId)
             //TODO Symlinks
@@ -185,15 +182,28 @@ class VaultAccess(private val rootDocumentFile: DocumentFile,
         return DecryptingReadableByteChannel(Channels.newChannel(contents), cryptor, true)
     }
 
-    fun createFileOrDirectory(path: List<String>, displayName: String, mimeType: String) {
+    /**
+     * @return Displayname of the file that's actually been created
+     */
+    fun createFileOrDirectory(path: List<String>, displayName: String, mimeType: String, alternativeName: ((String) -> String)? = null): String {
 //        if (flags.isReadOnly) {
 //            throw UnsupportedOperationException("Vault is readonly!")
 //        }
         val parent = getCipherDirectory(path)
         val cipherName = cachedCryptor.encryptFilename(displayName, parent.id) + Constants.CRYPTOMATOR_FILE_SUFFIX
-        if (parent.directory.findFile(cipherName) != null) {
-            throw RuntimeException("File or directory already exists!")
+        val exists =
+            if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR)
+                parent.directory.hasChildDirectory(cipherName)
+            else parent.directory.hasChildFile(cipherName)
+
+        if (exists && alternativeName != null) {
+            Log.d(TAG, "Document with name $displayName exists, using alternative name")
+            return createFileOrDirectory(path, alternativeName(displayName), mimeType, alternativeName)
         }
+        else if (exists) {
+            throw ChildAlreadyExistsException("File with cleartext name ${displayName} already exists!")
+        }
+        Log.d(TAG, "Document with name $displayName does not yet exist")
         when (mimeType) {
             DocumentsContract.Document.MIME_TYPE_DIR -> {
                 val dir = parent.directory.createDirectory(cipherName)  ?: throw ErrorCreatingDirectory("Failed to create directory $cipherName in ${parent.directory.uri}")
@@ -207,9 +217,10 @@ class VaultAccess(private val rootDocumentFile: DocumentFile,
                 val d2 = d1.findOrCreateDirectory(dirIdHash.substring(2)) ?: throw ErrorCreatingDirectory("Failed to create directory ${dirIdHash.substring(2)}")
             }
             else -> {
-                parent.directory.createFile(mimeType, cipherName) ?: throw ErrorCreatingFile("Failed to create file $cipherName in ${parent.directory.uri}")
+                parent.directory.createFile("application/binary", cipherName) ?: throw ErrorCreatingFile("Failed to create file $cipherName in ${parent.directory.uri}")
             }
         }
+        return displayName
     }
 
     fun renameDocument(path: List<String>, newName: String) {

@@ -29,6 +29,20 @@ fun DocumentFile.findDirectory(directoryName: String): DocumentFile {
     return f
 }
 
+fun DocumentFile.hasChildDirectory(directoryName: String): Boolean {
+    val f = findFile(directoryName)
+    if (f?.isDirectory == true)
+        return true
+    return false
+}
+
+fun DocumentFile.hasChildFile(fileName: String): Boolean {
+    val f = findFile(fileName)
+    if (f?.isFile == true)
+        return true
+    return false
+}
+
 fun DocumentFile.checkIsDirectory() {
     if (!isDirectory) {
         throw NotDirectoryException(uri)

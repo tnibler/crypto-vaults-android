@@ -1,3 +1,3 @@
 package com.tnibler.cryptomator_android.vault.exception
 
-class ChildAlreadyExistsException : RuntimeException()
+class ChildAlreadyExistsException(what: String? = null) : RuntimeException(what)

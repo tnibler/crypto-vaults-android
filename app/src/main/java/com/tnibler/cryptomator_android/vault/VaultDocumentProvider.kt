@@ -22,6 +22,7 @@ import com.tnibler.cryptomator_android.App
 import com.tnibler.cryptomator_android.BuildConfig
 import com.tnibler.cryptomator_android.data.Vault
 import com.tnibler.cryptomator_android.unlockVault.UnlockedVaultsService
+import com.tnibler.cryptomator_android.util.alternativeName
 import com.tnibler.cryptomator_android.vault.exception.FileNotFoundException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -155,6 +156,9 @@ class VaultDocumentProvider : DocumentsProvider() {
     }
 
     private fun getMimeType(file: VaultAccess.Companion.File): String? {
+        if (file.cipherFile.isDirectory) {
+            return Document.MIME_TYPE_DIR
+        }
         val ext = file.name.split(".").lastOrNull()
         return if (file.name.contains(".") && ext != null) {
             MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
@@ -181,9 +185,10 @@ class VaultDocumentProvider : DocumentsProvider() {
         }
         else {
             val vaultId = uri.authority?.toLongOrNull() ?: throw RuntimeException("Invalid Vault id!")
-            val vaultAccess = service!!.getVault(vaultId) ?: return result //TODO throw exception or return empty result?
+            val vaultAccess = service!!.getVault(vaultId) ?: throw SecurityException()
             try {
                 val file = vaultAccess.getFileOrDirectory(uri.pathSegments)
+                Log.d(TAG, "query file ${file.cipherFile.name}")
                 val flags =  Document.FLAG_SUPPORTS_REMOVE or Document.FLAG_SUPPORTS_COPY or Document.FLAG_SUPPORTS_MOVE
                 result.newRow().apply {
                     add(Document.COLUMN_DISPLAY_NAME, file.name)
@@ -240,22 +245,23 @@ class VaultDocumentProvider : DocumentsProvider() {
         val uri = Uri.parse(parentDocumentId)
         val vaultAccess = getVaultAccess(uri.authority?.toLongOrNull() ?: throw RuntimeException("Failed to parse vault id from document id '$parentDocumentId'"))
 
-        vaultAccess.createFileOrDirectory(uri.pathSegments, displayName, mimeType ?: "*/*")
+        val actualDisplayName = vaultAccess.createFileOrDirectory(uri.pathSegments, displayName, mimeType ?: "*/*", ::alternativeName)
         val id = Uri.Builder()
             .scheme(BuildConfig.SCHEME)
             .authority(uri.authority)
-            .path(uri.path + "/" + displayName)
+            .path(uri.path + "/" + actualDisplayName)
             .build()
         Log.d(TAG, "created directory with id $id")
         return id.toString()
     }
 
     override fun copyDocument(sourceDocumentId: String?, targetParentDocumentId: String?): String {
+        Log.d(TAG, "copyDocument: source=$sourceDocumentId, target=$targetParentDocumentId")
         val uri = Uri.parse(targetParentDocumentId)
         val vaultAccess = getVaultAccess(uri.authority?.toLongOrNull() ?: throw RuntimeException("Failed to parse vault id from document id '$targetParentDocumentId'"))
         val targetPath = Uri.parse(targetParentDocumentId).pathSegments
         val sourcePath = Uri.parse(sourceDocumentId).pathSegments
-        TODO()
+        throw UnsupportedOperationException()
     }
 
     override fun moveDocument(

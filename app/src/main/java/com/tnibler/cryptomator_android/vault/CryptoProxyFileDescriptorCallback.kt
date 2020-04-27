@@ -109,124 +109,143 @@ class CryptoProxyFileDescriptorCallback(
         Log.d(TAG, "cipher file size: ${cipherFile.length()}")
         val cleartextChunkSize = cryptor.fileContentCryptor().cleartextChunkSize()
         val ciphertextChunkSize = cryptor.fileContentCryptor().ciphertextChunkSize()
-        val firstChunkNo = (offset / cleartextChunkSize)
-
         val headerSize = cryptor.fileHeaderCryptor().headerSize()
-        val cipherHeader = ByteArray(headerSize)
-        val fileIn = contentResolver.openInputStream(cipherFile.uri) as? FileInputStream ?: throw RuntimeException("Failed opening cipher file")
-        if (fileIn.read(cipherHeader) != headerSize) {
-            throw RuntimeException("Failed reading entire header!")
-        }
-        val header = cryptor.fileHeaderCryptor().decryptHeader(ByteBuffer.wrap(cipherHeader))
-        Log.d(TAG, "decrypted header")
-
-
-        val numberOfChunks = ceil(onGetSize().toDouble() / cleartextChunkSize).toInt()
-        //generate new header with new nonce and content key (only once)
-        if (mode == "w" || shouldGenerateNewHeader()) {
-            //write to entirely new file
-            val newHeader = cryptor.fileHeaderCryptor().create()
-            val newFile = cipherFile.parentFile?.createFile("application/binary", cipherFile.name + ".tmp") ?: throw RuntimeException("Failed creating temporary file!")
-            val encryptedHeader = cryptor.fileHeaderCryptor().encryptHeader(newHeader)
-            val newFileOutputStream = contentResolver.openOutputStream(newFile.uri) as FileOutputStream
-            newFileOutputStream.write(encryptedHeader.array())
-
-            val buffer  = ByteBuffer.wrap(ByteArray(ciphertextChunkSize))
-            val nextOriginalChunk: (Long) -> ByteBuffer = { chunkNumber ->
-                val read = fileIn.read(buffer.array())
-                if (read < 0) {
-                    throw RuntimeException("Failed reading from file ${cipherFile.uri}")
+        when {
+            mode == "w" -> {
+                val newHeader = cryptor.fileHeaderCryptor().create()
+                val fileOut = contentResolver.openOutputStream(cipherFile.uri, "w") ?: throw RuntimeException()
+                val cipherHeader = cryptor.fileHeaderCryptor().encryptHeader(newHeader)
+                fileOut.write(cipherHeader.array())
+                val dataBuffer = ByteBuffer.wrap(data).limit(min(size, cleartextChunkSize)) as ByteBuffer
+                val numberOfChunks = ceil(1.0 * size / cleartextChunkSize).toLong()
+                for (chunkNumber in 0 until numberOfChunks) {
+                    val encrypted = cryptor.fileContentCryptor().encryptChunk(dataBuffer, chunkNumber, newHeader)
+                    fileOut.write(encrypted.array())
+                    dataBuffer.position(dataBuffer.limit())
+                    dataBuffer.limit(min(dataBuffer.limit() + cleartextChunkSize, size))
                 }
-                Log.d(TAG, "read $read bytes from file, buffer size ${buffer.capacity()}")
-                buffer.position(0)
-                buffer.limit(read)
-                cryptor.fileContentCryptor().decryptChunk(buffer, chunkNumber, header, true).apply {
-                    Log.d(TAG, "nextChunk decrypted: position=${position()}, limit=${limit()}")
-                }
+                return size
             }
-            val skipChunks: (Int) -> Unit = { n ->
-                val toSkip = (n * ciphertextChunkSize).toLong()
-                Log.d(TAG, "Skipping $toSkip bytes")
-                if (fileIn.skip(toSkip) != toSkip) {
-                    throw RuntimeException("Wrong number of bytes skipped")
+            shouldGenerateNewHeader() -> {
+                val newHeader = cryptor.fileHeaderCryptor().create()
+                val newFile = cipherFile.parentFile?.createFile("application/binary", cipherFile.name + ".tmp") ?: throw RuntimeException("Failed creating temporary file!")
+                val encryptedHeader = cryptor.fileHeaderCryptor().encryptHeader(newHeader)
+                val newFileOutputStream = contentResolver.openOutputStream(newFile.uri) as FileOutputStream
+                newFileOutputStream.write(encryptedHeader.array())
+                val fileIn = contentResolver.openInputStream(cipherFile.uri) as? FileInputStream ?: throw RuntimeException("Failed opening cipher file")
+                val cipherHeader = ByteArray(headerSize)
+                if (fileIn.read(cipherHeader) != headerSize && mode != "w") {
+                    throw RuntimeException("Failed reading entire header!")
                 }
-            }
+                val header = cryptor.fileHeaderCryptor().decryptHeader(ByteBuffer.wrap(cipherHeader))
+                val numberOfChunks = ceil(onGetSize().toDouble() / cleartextChunkSize).toInt()
 
-            val writeHelper = WriteHelper(nextOriginalChunk = nextOriginalChunk,
-                skipChunks = skipChunks,
-                numberOfOriginalChunks = numberOfChunks,
-                data = data,
-                chunkSize = cleartextChunkSize,
-                offset = offset,
-                size = size,
-                truncate = mode == "w")
+                val buffer  = ByteBuffer.wrap(ByteArray(ciphertextChunkSize))
+                val nextOriginalChunk: (Long) -> ByteBuffer = { chunkNumber ->
+                    val read = fileIn.read(buffer.array())
+                    if (read < 0) {
+                        throw RuntimeException("Failed reading from file ${cipherFile.uri}")
+                    }
+                    Log.d(TAG, "read $read bytes from file, buffer size ${buffer.capacity()}")
+                    buffer.position(0)
+                    buffer.limit(read)
+                    cryptor.fileContentCryptor().decryptChunk(buffer, chunkNumber, header, true).apply {
+                        Log.d(TAG, "nextChunk decrypted: position=${position()}, limit=${limit()}")
+                    }
+                }
+                val skipChunks: (Int) -> Unit = { n ->
+                    val toSkip = (n * ciphertextChunkSize).toLong()
+                    Log.d(TAG, "Skipping $toSkip bytes")
+                    if (fileIn.skip(toSkip) != toSkip) {
+                        throw RuntimeException("Wrong number of bytes skipped")
+                    }
+                }
 
-            while (writeHelper.available()) {
-                val chunk = writeHelper.nextChunk()
+                val writeHelper = WriteHelper(nextOriginalChunk = nextOriginalChunk,
+                    skipChunks = skipChunks,
+                    numberOfOriginalChunks = numberOfChunks,
+                    data = data,
+                    chunkSize = cleartextChunkSize,
+                    offset = offset,
+                    size = size,
+                    truncate = mode == "w")
+
+                while (writeHelper.available()) {
+                    val chunk = writeHelper.nextChunk()
 //                Log.d(TAG, "writing chunk: ${chunk.data.array().toString(Charset.forName("UTF-8"))}")
-                val encrypted = cryptor.fileContentCryptor().encryptChunk(chunk.data, chunk.number.toLong(), newHeader)
-                newFileOutputStream.write(encrypted.array())
-            }
-            //delete old file
-            val n = checkNotNull(cipherFile.name)
-            cipherFile.delete()
-            newFile.renameTo(n)
-            Log.d(TAG, "Size of final file: ${newFile.length()}")
-            cipherFile = newFile
-        }
-        else {
-            val firstChunkWithData = offset % cleartextChunkSize
-            val lastChunkWithData = (offset + size) / cleartextChunkSize
-            val firstAndLastBuffer = listOf(ByteBuffer.allocate(ciphertextChunkSize)) +
-                    if (lastChunkWithData != firstChunkWithData)
-                        listOf(ByteBuffer.allocate(ciphertextChunkSize))
-                    else listOf()
-            val r1 = fileIn.channel.read(firstAndLastBuffer.first(), headerSize.toLong())
-            Log.d(TAG, "read $r1 from first chunk with data $firstChunkWithData")
-            firstAndLastBuffer.first().limit(r1).position(0)
-            if (lastChunkWithData != firstChunkWithData) {
-                val r2 = fileIn.channel.read(firstAndLastBuffer.last(), headerSize + lastChunkWithData * ciphertextChunkSize)
-                Log.d(TAG, "read $r2 from last chunk with data $lastChunkWithData")
-                firstAndLastBuffer.last().limit(r2).position(0)
-            }
-            fileIn.close()
-
-            val nextOriginalChunk = { chunkNumber: Long ->
-                val b = when (chunkNumber) {
-                    firstChunkWithData -> firstAndLastBuffer.first()
-                    lastChunkWithData -> firstAndLastBuffer.last()
-                    else -> throw IllegalArgumentException()
+                    val encrypted = cryptor.fileContentCryptor().encryptChunk(chunk.data, chunk.number.toLong(), newHeader)
+                    newFileOutputStream.write(encrypted.array())
                 }
-                cryptor.fileContentCryptor().decryptChunk(b, chunkNumber, header, true)
+                //delete old file
+                val n = checkNotNull(cipherFile.name)
+                cipherFile.delete()
+                newFile.renameTo(n)
+                Log.d(TAG, "Size of final file: ${newFile.length()}")
+                cipherFile = newFile
             }
-            val skipChunks = { n: Int -> }
-            val writeHelper = WriteHelper(nextOriginalChunk = nextOriginalChunk,
-                skipChunks = skipChunks,
-                numberOfOriginalChunks = numberOfChunks,
-                data = data,
-                chunkSize = cleartextChunkSize,
-                offset = offset,
-                size = size,
-                truncate = false)
-            Log.d(TAG, "Opening file for writing")
-            val fileOutChannel = (contentResolver.openOutputStream(cipherFile.uri, "rw") as FileOutputStream).channel
-            Log.d(TAG, "Opened file for writing")
-            var newCipherSize: Long = headerSize.toLong()
-            while (writeHelper.available()) {
-                val chunk = writeHelper.nextChunk()
-                val encrypted = cryptor.fileContentCryptor().encryptChunk(chunk.data, chunk.number.toLong(), header)
-                val dec = cryptor.fileContentCryptor().decryptChunk(encrypted, chunk.number.toLong(), header, true)
-                Log.d(TAG, "data: '${chunk.data.array().toString(Charset.defaultCharset()).take(size)}, ${chunk.data.remaining()} bytes'")
-                Log.d(TAG, "writing chunk #${chunk.number} to position ${headerSize + chunk.number * ciphertextChunkSize}")
-                Log.d(TAG, "encrypted chunk size ${encrypted.remaining()}")
-                newCipherSize += encrypted.remaining()
-                fileOutChannel.write(encrypted,
-                    (headerSize + chunk.number * ciphertextChunkSize).toLong()
-                )
+            else -> {
+                val cipherHeader = ByteArray(headerSize)
+                val fileIn = contentResolver.openInputStream(cipherFile.uri) as? FileInputStream ?: throw RuntimeException("Failed opening cipher file")
+                if (fileIn.read(cipherHeader) != headerSize && mode != "w") {
+                    throw RuntimeException("Failed reading entire header!")
+                }
+                val header = cryptor.fileHeaderCryptor().decryptHeader(ByteBuffer.wrap(cipherHeader))
+                Log.d(TAG, "decrypted header")
+
+
+                val numberOfChunks = ceil(onGetSize().toDouble() / cleartextChunkSize).toInt()
+                val firstChunkWithData = offset % cleartextChunkSize
+                val lastChunkWithData = (offset + size) / cleartextChunkSize
+                val firstAndLastBuffer = listOf(ByteBuffer.allocate(ciphertextChunkSize)) +
+                        if (lastChunkWithData != firstChunkWithData)
+                            listOf(ByteBuffer.allocate(ciphertextChunkSize))
+                        else listOf()
+                val r1 = fileIn.channel.read(firstAndLastBuffer.first(), headerSize.toLong())
+                Log.d(TAG, "read $r1 from first chunk with data $firstChunkWithData")
+                firstAndLastBuffer.first().limit(r1).position(0)
+                if (lastChunkWithData != firstChunkWithData) {
+                    val r2 = fileIn.channel.read(firstAndLastBuffer.last(), headerSize + lastChunkWithData * ciphertextChunkSize)
+                    Log.d(TAG, "read $r2 from last chunk with data $lastChunkWithData")
+                    firstAndLastBuffer.last().limit(r2).position(0)
+                }
+                fileIn.close()
+
+                val nextOriginalChunk = { chunkNumber: Long ->
+                    val b = when (chunkNumber) {
+                        firstChunkWithData -> firstAndLastBuffer.first()
+                        lastChunkWithData -> firstAndLastBuffer.last()
+                        else -> throw IllegalArgumentException()
+                    }
+                    cryptor.fileContentCryptor().decryptChunk(b, chunkNumber, header, true)
+                }
+                val skipChunks = { n: Int -> }
+                val writeHelper = WriteHelper(nextOriginalChunk = nextOriginalChunk,
+                    skipChunks = skipChunks,
+                    numberOfOriginalChunks = numberOfChunks,
+                    data = data,
+                    chunkSize = cleartextChunkSize,
+                    offset = offset,
+                    size = size,
+                    truncate = false)
+                val fileOutChannel = (contentResolver.openOutputStream(cipherFile.uri, "rw") as FileOutputStream).channel
+                var newCipherSize: Long = headerSize.toLong()
+                while (writeHelper.available()) {
+                    val chunk = writeHelper.nextChunk()
+                    val encrypted = cryptor.fileContentCryptor().encryptChunk(chunk.data, chunk.number.toLong(), header)
+                    val dec = cryptor.fileContentCryptor().decryptChunk(encrypted, chunk.number.toLong(), header, true)
+                    Log.d(TAG, "data: '${chunk.data.array().toString(Charset.defaultCharset()).take(size)}, ${chunk.data.remaining()} bytes'")
+                    Log.d(TAG, "writing chunk #${chunk.number} to position ${headerSize + chunk.number * ciphertextChunkSize}")
+                    Log.d(TAG, "encrypted chunk size ${encrypted.remaining()}")
+                    newCipherSize += encrypted.remaining()
+                    fileOutChannel.write(encrypted,
+                        (headerSize + chunk.number * ciphertextChunkSize).toLong()
+                    )
+                }
+                fileOutChannel.truncate(newCipherSize)
+                fileOutChannel.close()
             }
-            fileOutChannel.truncate(newCipherSize)
-            fileOutChannel.close()
         }
+
 
         return min(size, (onGetSize() - offset).toInt()).apply { Log.d(TAG, "Returning $this") }
     }
